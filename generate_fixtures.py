@@ -85,6 +85,7 @@ BBC_NAME = {
     "Betis":                 "Real Betis",
 
     # Germany
+    "Bayern":                "Bayern Munich",
     "Bayern Munich":         "Bayern Munich",
     "Bayern München":        "Bayern Munich",
     "FC Bayern München":     "Bayern Munich",
@@ -148,6 +149,7 @@ BBC_NAME = {
     "AEK Athens":            "AEK Athens",
     "AEK":                   "AEK Athens",
     "AEK Athens FC":         "AEK Athens",
+    "PAE AEK":               "AEK Athens",
 
     # Austria
     "LASK":                  "LASK",
@@ -169,12 +171,15 @@ BBC_NAME = {
 
     # Slovakia
     "Slovan Bratislava":     "Slovan Bratislava",
+    "Sl. Bratislava":        "Slovan Bratislava",
     "ŠK Slovan Bratislava":  "Slovan Bratislava",
 
     # Ukraine
     "Shakhtar Donetsk":      "Shakhtar Donetsk",
     "Shakhtar":              "Shakhtar Donetsk",
+    "Shaktar":               "Shakhtar Donetsk",
     "FC Shakhtar Donetsk":   "Shakhtar Donetsk",
+    "FK Shakhtar Donetsk":   "Shakhtar Donetsk",
 
     # Azerbaijan
     "Sabah":                 "Sabah",
