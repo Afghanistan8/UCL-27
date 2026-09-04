@@ -47,9 +47,27 @@ export default function handler(req, res) {
     .filter(([k, v]) => !v && k !== 'ABLY_API_KEY')
     .map(([k]) => k);
 
+  // Which build is actually serving. Vercel injects these automatically.
+  //
+  // This exists because a failed deployment is SILENT from the outside: Vercel
+  // keeps the last good build live, so every endpoint keeps returning 200 while
+  // your pushes quietly stop shipping. (That happened here — an invalid
+  // `_comment_crons` key in vercel.json rejected two deploys and nothing looked
+  // wrong.) Comparing `deployment.commit` against git HEAD makes it detectable.
+  const deployment = {
+    commit: process.env.VERCEL_GIT_COMMIT_SHA
+      ? process.env.VERCEL_GIT_COMMIT_SHA.slice(0, 7)
+      : 'local',
+    branch: process.env.VERCEL_GIT_COMMIT_REF || null,
+    message: process.env.VERCEL_GIT_COMMIT_MESSAGE || null,
+    env: process.env.VERCEL_ENV || 'development',
+    region: process.env.VERCEL_REGION || null,
+  };
+
   const body = {
     service: "UCL '27 Predict — cron",
     ok: missing.length === 0,
+    deployment,
     note: 'This project exposes serverless functions only. There is no UI here; '
         + 'the app itself is a separate Vercel project. A 404 on any path other '
         + 'than those listed below is expected.',
@@ -122,6 +140,9 @@ export default function handler(req, res) {
 </table>
 <footer>
   AI predictor: <code>${esc(body.ai_predictor || 'not set')}</code><br>
+  Build: <code>${esc(deployment.commit)}</code>
+  ${deployment.branch ? `on <code>${esc(deployment.branch)}</code>` : ''}
+  ${deployment.region ? `· ${esc(deployment.region)}` : ''}<br>
   GenLayer Bradbury (chain 4221) ·
   <a href="https://explorer-bradbury.genlayer.com" rel="noopener">Explorer</a> ·
   ${esc(body.time)}
