@@ -210,35 +210,36 @@ mark_postponed()          # permissionless + source-verified; opens refunds only
 ## Scheduling
 
 The endpoints do the work; something has to decide *when*. That is
-`.github/workflows/cron.yml`:
+**[cron-job.org](https://cron-job.org)** — four jobs, each sending
+`Authorization: Bearer <CRON_SECRET>`:
 
-| Endpoint | Schedule (UTC) | Why |
+| Endpoint | Interval | Why |
 |---|---|---|
-| `/api/resolve-matches` | `*/10 * * * *` | Settlement — the money path. Always on, so a rescheduled fixture can't leave a market unsettled. No-ops when nothing is eligible. |
-| `/api/predict-matches` | `*/30 * * * *` | Must land inside the endpoint's 30h pre-kickoff window. |
-| `/api/standings` | `0 */3 * * *` | League-phase table scrape. |
-| `/api/live-scores` | `*/5 16-23 * * 2,3,4` | Cosmetic only — never settles anything — so it's scoped to UCL match nights rather than running 288×/day year-round. |
+| `/api/resolve-matches` | 10 min | Settlement — the money path. Always on, so a rescheduled fixture can't leave a market unsettled. No-ops when nothing is eligible. |
+| `/api/predict-matches` | 30 min | Must land inside the endpoint's 30h pre-kickoff window. |
+| `/api/standings` | 3 h | League-phase table scrape. |
+| `/api/live-scores` | 5 min | Cosmetic only — never settles anything. Safe to pause outside match weeks. |
 
-**Why GitHub Actions and not Vercel Cron:** Vercel's Hobby plan fires each cron
-entry only **once per day**, far too slow to settle a market after full time.
-This repo is public, so Actions minutes are unlimited. The entries still in
+**Why not Vercel Cron:** the Hobby plan fires each entry only **once per day**,
+far too slow to settle a market after full time. The four entries still in
 `cron/vercel.json` are kept as a once-daily safety net; every endpoint is
-idempotent, so both schedulers running is harmless.
+idempotent, so overlapping schedulers are harmless — `resolve()` no-ops once a
+market has settled, `predict()` reverts on a match that already has an AI call,
+and `standings` is a plain delete-then-insert.
 
-**One-time setup.** The repo is public, so the token must come from Secrets and
-never be committed:
+**Why not GitHub Actions:** its `schedule:` trigger is best-effort — commonly
+minutes late, and it skips ticks under load. More importantly GitHub disables
+scheduled workflows after 60 days without a push, a real risk across the MD6
+(Dec 2026) → MD7 (Jan 2027) winter gap. `.github/workflows/cron.yml` therefore
+keeps only `workflow_dispatch`, as a **manual** runner.
 
-1. GitHub repo → **Settings → Secrets and variables → Actions**
-2. **New repository secret** → Name `CRON_SECRET`, value = the same
-   `CRON_SECRET` set on the Vercel cron project
-3. Optional: add a repository **variable** `CRON_BASE_URL` if the cron project
-   is ever renamed (defaults to `https://ucl27-predict-cron.vercel.app`)
+### Manual runs
 
-Any endpoint can also be fired by hand: **Actions → cron → Run workflow**, then
-pick an endpoint (including `mark-postponed` and `all`).
-
-On Vercel Pro, tighten the `cron/vercel.json` schedules instead and delete the
-workflow.
+**Actions → cron → Run workflow**, then pick an endpoint (including
+`mark-postponed` and `all`). Requires a `CRON_SECRET` repository secret:
+**Settings → Secrets and variables → Actions → New repository secret**. The repo
+is public, so the token must live in Secrets and never be committed. Optionally
+set a `CRON_BASE_URL` repository *variable* if the cron project is renamed.
 
 ---
 
