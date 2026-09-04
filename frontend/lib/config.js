@@ -1,14 +1,13 @@
 /* lib/config.js — Bradbury testnet + UCL '27 Supabase config */
 
 // UCL '27 Predict uses its OWN dedicated Supabase project (not shared with
-// laliga27-predict). Fill these in for the new project after you create it.
-export const SUPABASE_URL = 'https://YOUR_UCL_PROJECT.supabase.co';
+// laliga27-predict). Project ref: qahjpnaahmfxqjsizxkh
+export const SUPABASE_URL = 'https://qahjpnaahmfxqjsizxkh.supabase.co';
 
-// ⚠️ PASTE THE UCL '27 PROJECT'S *PUBLISHABLE* KEY HERE (starts with sb_publishable_).
-// Supabase dashboard → your UCL project → Settings → API keys →
-// "Publishable" (the renamed anon key). This is safe to ship in the browser;
-// RLS restricts it to public reads. The secret key stays server-side only.
-export const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_REPLACE_ME';
+// Supabase publishable key (formerly the anon key) — safe in the browser
+// because RLS restricts it to public reads. Writes go through the mirror
+// endpoints below, which use the SERVICE key (never exposed here).
+export const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_64SZAwqHWIHcAFrmvyyfEQ_s-jw9qKq';
 
 // GenLayer Bradbury testnet — DO NOT CHANGE
 export const STUDIONET = {
