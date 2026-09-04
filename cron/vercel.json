@@ -1,4 +1,8 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/", "destination": "/api/health" }
+  ],
   "crons": [
     {
       "path": "/api/live-scores",
@@ -35,6 +39,9 @@
     },
     "api/set-username.js": {
       "maxDuration": 15
+    },
+    "api/health.js": {
+      "maxDuration": 10
     }
   }
 }
