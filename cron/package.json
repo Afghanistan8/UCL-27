@@ -1,0 +1,12 @@
+{
+  "name": "ucl27-predict-cron",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "ably": "^2.5.0",
+    "genlayer-js": "^1.1.8",
+    "viem": "^2.21.0"
+  }
+}

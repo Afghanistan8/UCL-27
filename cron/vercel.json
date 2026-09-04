@@ -1,0 +1,40 @@
+{
+  "crons": [
+    {
+      "path": "/api/live-scores",
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/resolve-matches",
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/standings",
+      "schedule": "0 5 * * *"
+    },
+    {
+      "path": "/api/predict-matches",
+      "schedule": "0 6 * * *"
+    }
+  ],
+  "functions": {
+    "api/resolve-matches.js": {
+      "maxDuration": 60
+    },
+    "api/standings.js": {
+      "maxDuration": 30
+    },
+    "api/predict-matches.js": {
+      "maxDuration": 60
+    },
+    "api/mark-postponed.js": {
+      "maxDuration": 60
+    },
+    "api/mirror-prediction.js": {
+      "maxDuration": 30
+    },
+    "api/set-username.js": {
+      "maxDuration": 15
+    }
+  }
+}

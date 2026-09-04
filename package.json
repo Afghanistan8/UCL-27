@@ -1,0 +1,16 @@
+{
+  "name": "ucl27-predict-deploy",
+  "version": "1.0.0",
+  "description": "UCL 2026/27 prediction market — deploy scripts + fixture generator",
+  "type": "module",
+  "scripts": {
+    "deploy": "node deploy.js",
+    "deploy:ai": "node deploy-ai.js",
+    "fixtures": "python generate_fixtures.py"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.0",
+    "genlayer-js": "^1.1.8"
+  }
+}

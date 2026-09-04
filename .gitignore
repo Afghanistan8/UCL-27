@@ -1,0 +1,30 @@
+# env / secrets
+.env
+.env.local
+.env.*.local
+
+# node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+
+# ide
+.vscode/
+.idea/
+*.swp
+
+# os
+.DS_Store
+Thumbs.db
+
+# vercel
+.vercel/
