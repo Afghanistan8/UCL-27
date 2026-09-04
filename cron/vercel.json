@@ -3,6 +3,21 @@
   "rewrites": [
     { "source": "/", "destination": "/api/health" }
   ],
+  "_comment_crons": [
+    "The REAL scheduler is .github/workflows/cron.yml — the repo is public so",
+    "GitHub Actions minutes are unlimited, and it can run every 5-10 minutes.",
+    "Vercel's Hobby plan fires each entry below only ONCE PER DAY, which is far",
+    "too slow to settle a market shortly after full time.",
+    "",
+    "These entries are kept as a daily safety net: if the GitHub workflow is",
+    "ever disabled or the secret rotates, each endpoint still gets called once",
+    "a day. Every endpoint is idempotent, so both schedulers running is safe —",
+    "resolve() no-ops once a market has settled, predict() reverts on a match",
+    "that already has an AI call, and standings is a plain delete-then-insert.",
+    "",
+    "On Vercel Pro these can be tightened to */10, */30, 0 */3 and */5 and the",
+    "GitHub workflow removed."
+  ],
   "crons": [
     {
       "path": "/api/live-scores",

@@ -197,6 +197,48 @@ mark_postponed()          # permissionless + source-verified; opens refunds only
 6. Full season deploy: `node deploy.js` (144 markets — deploys pace themselves; safe to re-run).
 7. Cron: deploy the `cron/` directory as its own Vercel project. Set the same env vars (plus `CRON_SECRET`).
 8. Frontend: deploy the `frontend/` directory to Vercel. Fill in `frontend/lib/config.js` with your Supabase project's URL + publishable key and the cron project's URL.
+9. Scheduling: add a `CRON_SECRET` repository secret on GitHub (see below).
+
+> **Two Vercel projects, not one.** `cron/` and `frontend/` are deployed as
+> separate projects from the same repo, differing only in **Root Directory**.
+> The cron project holds every secret and exposes no UI — hitting its bare
+> domain shows `/api/health`, a status page, not the app. The frontend project
+> is fully static and takes **no** environment variables.
+
+---
+
+## Scheduling
+
+The endpoints do the work; something has to decide *when*. That is
+`.github/workflows/cron.yml`:
+
+| Endpoint | Schedule (UTC) | Why |
+|---|---|---|
+| `/api/resolve-matches` | `*/10 * * * *` | Settlement — the money path. Always on, so a rescheduled fixture can't leave a market unsettled. No-ops when nothing is eligible. |
+| `/api/predict-matches` | `*/30 * * * *` | Must land inside the endpoint's 30h pre-kickoff window. |
+| `/api/standings` | `0 */3 * * *` | League-phase table scrape. |
+| `/api/live-scores` | `*/5 16-23 * * 2,3,4` | Cosmetic only — never settles anything — so it's scoped to UCL match nights rather than running 288×/day year-round. |
+
+**Why GitHub Actions and not Vercel Cron:** Vercel's Hobby plan fires each cron
+entry only **once per day**, far too slow to settle a market after full time.
+This repo is public, so Actions minutes are unlimited. The entries still in
+`cron/vercel.json` are kept as a once-daily safety net; every endpoint is
+idempotent, so both schedulers running is harmless.
+
+**One-time setup.** The repo is public, so the token must come from Secrets and
+never be committed:
+
+1. GitHub repo → **Settings → Secrets and variables → Actions**
+2. **New repository secret** → Name `CRON_SECRET`, value = the same
+   `CRON_SECRET` set on the Vercel cron project
+3. Optional: add a repository **variable** `CRON_BASE_URL` if the cron project
+   is ever renamed (defaults to `https://ucl27-predict-cron.vercel.app`)
+
+Any endpoint can also be fired by hand: **Actions → cron → Run workflow**, then
+pick an endpoint (including `mark-postponed` and `all`).
+
+On Vercel Pro, tighten the `cron/vercel.json` schedules instead and delete the
+workflow.
 
 ---
 

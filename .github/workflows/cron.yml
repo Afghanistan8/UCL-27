@@ -1,0 +1,138 @@
+# UCL '27 Predict — scheduled cron driver
+#
+# WHY THIS EXISTS INSTEAD OF cron/vercel.json's `crons` BLOCK
+# ----------------------------------------------------------
+# Vercel's Hobby plan only fires each cron entry ONCE PER DAY, which is far too
+# slow for a market that must settle shortly after full time. Those entries are
+# left in cron/vercel.json as a documented fallback, but THIS workflow is the
+# real scheduler. The repo is public, so Actions minutes are unlimited.
+#
+# WHAT IT DOES
+# ------------
+# Each schedule below pings one endpoint on the cron project with the shared
+# bearer token. The endpoints are the ones that do the work — this file only
+# decides WHEN. Nothing here touches money directly: /api/resolve-matches asks
+# the contract to settle itself, and the contract is the only thing that can.
+#
+# SETUP (one time)
+# ----------------
+# Add a repository secret named CRON_SECRET whose value matches the CRON_SECRET
+# env var set on the Vercel cron project:
+#   GitHub repo -> Settings -> Secrets and variables -> Actions
+#   -> New repository secret -> Name: CRON_SECRET
+# The repo is PUBLIC, so the token must live in Secrets and never inline here.
+#
+# Optionally override the target with a CRON_BASE_URL repository *variable*
+# (Settings -> Secrets and variables -> Actions -> Variables) if the cron
+# project is ever renamed.
+
+name: cron
+
+on:
+  schedule:
+    # Times are UTC. GitHub's scheduler is best-effort and can run late under
+    # load, which is why every endpoint is idempotent and safe to re-run.
+
+    # Settlement — the money path. Always on: a market must not sit unsettled
+    # just because a fixture was rescheduled outside the usual window. It is a
+    # cheap no-op when nothing is eligible.
+    - cron: '*/10 * * * *'      # resolve-matches, every 10 min
+
+    # AI Call — must land inside the 30h pre-kickoff window the endpoint uses.
+    - cron: '*/30 * * * *'      # predict-matches, every 30 min
+
+    # League-phase table scrape.
+    - cron: '0 */3 * * *'       # standings, every 3 h
+
+    # Live scores are COSMETIC ONLY (they never settle anything), so this one
+    # is scoped to UCL match windows — Tue/Wed/Thu evenings — instead of
+    # burning 288 runs/day year-round.
+    - cron: '*/5 16-23 * * 2,3,4'   # live-scores, match nights only
+
+  # Lets you fire any endpoint by hand from the Actions tab.
+  workflow_dispatch:
+    inputs:
+      endpoint:
+        description: Endpoint to run manually
+        required: true
+        default: standings
+        type: choice
+        options:
+          - standings
+          - live-scores
+          - resolve-matches
+          - predict-matches
+          - mark-postponed
+          - all
+
+# Never let a slow run stack on top of the next tick for the same endpoint.
+concurrency:
+  group: cron-${{ github.event.schedule || github.event.inputs.endpoint }}
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve which endpoint(s) this run should hit
+        id: pick
+        run: |
+          case "${{ github.event.schedule }}" in
+            '*/10 * * * *')        EPS="resolve-matches" ;;
+            '*/30 * * * *')        EPS="predict-matches" ;;
+            '0 */3 * * *')         EPS="standings" ;;
+            '*/5 16-23 * * 2,3,4') EPS="live-scores" ;;
+            *)
+              # Manual dispatch (no github.event.schedule).
+              IN="${{ github.event.inputs.endpoint }}"
+              if [ "$IN" = "all" ]; then
+                EPS="standings live-scores resolve-matches predict-matches"
+              else
+                EPS="${IN:-standings}"
+              fi
+              ;;
+          esac
+          echo "endpoints=$EPS" >> "$GITHUB_OUTPUT"
+          echo "Will call: $EPS"
+
+      - name: Call endpoint(s)
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BASE_URL: ${{ vars.CRON_BASE_URL || 'https://ucl27-predict-cron.vercel.app' }}
+        run: |
+          set -uo pipefail
+
+          if [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::CRON_SECRET repository secret is not set."
+            echo "::error::Add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+          FAILED=0
+          for EP in ${{ steps.pick.outputs.endpoints }}; do
+            echo "::group::/api/$EP"
+
+            # --max-time 120 comfortably exceeds the 60s Vercel maxDuration.
+            # --retry covers transient edge/network blips, not app-level errors.
+            CODE=$(curl -sS \
+                    --max-time 120 \
+                    --retry 2 --retry-delay 5 --retry-connrefused \
+                    -o /tmp/out.json \
+                    -w '%{http_code}' \
+                    -H "Authorization: Bearer ${CRON_SECRET}" \
+                    "${BASE_URL}/api/${EP}") || CODE=000
+
+            echo "HTTP $CODE"
+            # Response bodies contain match ids and counts only — no secrets.
+            head -c 2000 /tmp/out.json 2>/dev/null || true
+            echo ""
+
+            if [ "$CODE" != "200" ]; then
+              echo "::error::/api/$EP returned HTTP $CODE"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          done
+
+          exit $FAILED
