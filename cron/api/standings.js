@@ -17,6 +17,14 @@ const BBC_TABLE_URL = 'https://www.bbc.com/sport/football/champions-league/table
 
 // team name (as BBC prints it) -> { id, crest, short } using football-data's
 // stable CDN, so the Table tab crests match the rest of the app.
+//
+// Every id was VERIFIED against GET /v4/competitions/CL/teams?season=2026 and
+// every crest URL confirmed HTTP 200. Several clubs have ids that are NOT
+// guessable (Como 7397, Sabah 10233, Bodø/Glimt 5721, Viking 5720, Slovan
+// 7509, AEK 1899, LASK 2016, Slavia 930, Galatasaray 610, Fenerbahçe 613) —
+// re-check that endpoint before editing any of them.
+//
+// NOTE: BBC prints "Bodø / Glimt" WITH spaces around the slash.
 const CDN = 'https://crests.football-data.org';
 const TEAM_META = {
   // England
@@ -44,7 +52,7 @@ const TEAM_META = {
   'Inter Milan':          { id: 108,  crest: `${CDN}/108.png`,  short: 'Inter' },
   'Napoli':               { id: 113,  crest: `${CDN}/113.png`,  short: 'Napoli' },
   'Roma':                 { id: 100,  crest: `${CDN}/100.png`,  short: 'Roma' },
-  'Como':                 { id: 604,  crest: `${CDN}/604.png`,  short: 'Como' },
+  'Como':                 { id: 7397, crest: `${CDN}/7397.png`, short: 'Como' },
 
   // France
   'Paris Saint-Germain':  { id: 524,  crest: `${CDN}/524.png`,  short: 'PSG' },
@@ -64,39 +72,53 @@ const TEAM_META = {
   'Club Brugge':          { id: 851,  crest: `${CDN}/851.png`,  short: 'Brugge' },
 
   // Turkey
-  'Galatasaray':          { id: 645,  crest: `${CDN}/645.png`,  short: 'Galatasaray' },
-  'Fenerbahce':           { id: 611,  crest: `${CDN}/611.png`,  short: 'Fenerbahce' },
-  'Fenerbahçe':           { id: 611,  crest: `${CDN}/611.png`,  short: 'Fenerbahce' },
+  'Galatasaray':          { id: 610,  crest: `${CDN}/610.png`,  short: 'Galatasaray' },
+  'Fenerbahce':           { id: 613,  crest: `${CDN}/613.png`,  short: 'Fenerbahce' },
+  'Fenerbahçe':           { id: 613,  crest: `${CDN}/613.png`,  short: 'Fenerbahce' },
 
   // Greece
-  'AEK Athens':           { id: 6969, crest: `${CDN}/6969.png`, short: 'AEK' },
+  'AEK Athens':           { id: 1899, crest: `${CDN}/1899.png`, short: 'AEK' },
+  'PAE AEK':              { id: 1899, crest: `${CDN}/1899.png`, short: 'AEK' },
 
   // Austria
-  'LASK':                 { id: 2020, crest: `${CDN}/2020.png`, short: 'LASK' },
+  'LASK':                 { id: 2016, crest: `${CDN}/2016.png`, short: 'LASK' },
 
-  // Norway
-  'Bodo/Glimt':           { id: 1959, crest: `${CDN}/1959.png`, short: 'Bodo/Glimt' },
-  'Bodø/Glimt':           { id: 1959, crest: `${CDN}/1959.png`, short: 'Bodo/Glimt' },
-  'Viking':               { id: 1948, crest: `${CDN}/1948.png`, short: 'Viking' },
+  // Norway — BBC prints "Bodø / Glimt" with spaces around the slash.
+  'Bodo/Glimt':           { id: 5721, crest: `${CDN}/5721.png`, short: 'Bodo/Glimt' },
+  'Bodø/Glimt':           { id: 5721, crest: `${CDN}/5721.png`, short: 'Bodo/Glimt' },
+  'Bodø / Glimt':         { id: 5721, crest: `${CDN}/5721.png`, short: 'Bodo/Glimt' },
+  'Bodo / Glimt':         { id: 5721, crest: `${CDN}/5721.png`, short: 'Bodo/Glimt' },
+  'Viking':               { id: 5720, crest: `${CDN}/5720.png`, short: 'Viking' },
 
   // Czechia
-  'Slavia Prague':        { id: 907,  crest: `${CDN}/907.png`,  short: 'Slavia' },
+  'Slavia Prague':        { id: 930,  crest: `${CDN}/930.png`,  short: 'Slavia' },
+  'Slavia Praha':         { id: 930,  crest: `${CDN}/930.png`,  short: 'Slavia' },
 
   // Slovakia
-  'Slovan Bratislava':    { id: 7910, crest: `${CDN}/7910.png`, short: 'Slovan' },
+  'Slovan Bratislava':    { id: 7509, crest: `${CDN}/7509.png`, short: 'Slovan' },
+  'Sl. Bratislava':       { id: 7509, crest: `${CDN}/7509.png`, short: 'Slovan' },
 
   // Ukraine
   'Shakhtar Donetsk':     { id: 1887, crest: `${CDN}/1887.png`, short: 'Shakhtar' },
+  'Shaktar':              { id: 1887, crest: `${CDN}/1887.png`, short: 'Shakhtar' },
 
   // Azerbaijan
-  'Sabah':                { id: 7995, crest: `${CDN}/7995.png`, short: 'Sabah' },
+  'Sabah':                { id: 10233, crest: `${CDN}/10233.png`, short: 'Sabah' },
 };
 
 function metaFor(team) {
   if (TEAM_META[team]) return TEAM_META[team];
+
+  // Collapse whitespace, then retry — BBC renders some names with stray
+  // spacing (notably "Bodø / Glimt" vs "Bodø/Glimt").
+  const squashed = team.replace(/\s+/g, ' ').trim();
+  if (TEAM_META[squashed]) return TEAM_META[squashed];
+  const noSlashSpaces = squashed.replace(/\s*\/\s*/g, '/');
+  if (TEAM_META[noSlashSpaces]) return TEAM_META[noSlashSpaces];
+
   // loose match (e.g. "Man City" vs "Manchester City")
   const key = Object.keys(TEAM_META).find(
-    (k) => team.includes(k) || k.includes(team)
+    (k) => squashed.includes(k) || k.includes(squashed)
   );
   return key ? TEAM_META[key] : null;
 }

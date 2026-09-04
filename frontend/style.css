@@ -74,6 +74,13 @@
 *, *::before, *::after { box-sizing: border-box; }
 html { font-size: 16px; -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 
+/* The UA stylesheet's `[hidden] { display: none }` is beaten by ANY author
+ * rule that sets `display` on the same element — e.g. `.modal-backdrop
+ * { display: flex }`, which made both modals render on page load regardless
+ * of the `hidden` attribute. All JS visibility toggling in app.js goes
+ * through `el.hidden`, so make that attribute authoritative. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
