@@ -225,7 +225,15 @@ far too slow to settle a market after full time. The four entries still in
 `cron/vercel.json` are kept as a once-daily safety net; every endpoint is
 idempotent, so overlapping schedulers are harmless — `resolve()` no-ops once a
 market has settled, `predict()` reverts on a match that already has an AI call,
-and `standings` is a plain delete-then-insert.
+and `standings` is a plain delete-then-insert. On Vercel Pro, tighten those
+entries to `*/10`, `*/30`, `0 */3` and `*/5` and drop cron-job.org.
+
+> ⚠️ **`cron/vercel.json` is strictly schema-validated.** It accepts only known
+> top-level keys (`$schema`, `rewrites`, `crons`, `functions`, …). JSON has no
+> comment syntax, and adding a pseudo-comment key such as `_comment` makes
+> Vercel reject the entire config with *"Vercel couldn't load a valid project
+> configuration"* — the deployment fails and the previous build silently stays
+> live. Document things here in the README instead.
 
 **Why not GitHub Actions:** its `schedule:` trigger is best-effort — commonly
 minutes late, and it skips ticks under load. More importantly GitHub disables
