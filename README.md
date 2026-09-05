@@ -46,7 +46,7 @@ primary   = gl.nondet.web.render(self.resolution_url,   mode="text")  # BBC by d
 secondary = gl.nondet.web.render(self.resolution_url_2, mode="text")  # ESPN by date
 ```
 
-There is no oracle service, no off-chain job pushing scores in, no trusted signer. The web pages **are** the source of truth, fetched by the validators at the moment of resolution. The prompt bases the result on the primary, uses the secondary as a cross-check, and returns "not resolved" (leaving the match open) if the two clearly disagree — so a single bad read can't settle a market. Team names are normalized in the prompt (`"Man City"/"Manchester City"`, `"Bayern München"/"FC Bayern" = "Bayern Munich"`, `"Inter"/"Internazionale" = "Inter Milan"`, `"Paris St-Germain"/"PSG" = "Paris Saint-Germain"`, `"Bodø/Glimt" = "Bodo/Glimt"`, `"Slavia Praha" = "Slavia Prague"`, and more) so spelling differences between sources still match the same fixture.
+There is no oracle service, no off-chain job pushing scores in, no trusted signer. The web pages **are** the source of truth, fetched by the validators at the moment of resolution. **Both sources must render and agree** before a market can settle — a single source, however confident, never moves money (see [Resolution hardening](#resolution-hardening)). Team names are normalized in the prompt (`"Man City"/"Manchester City"`, `"Bayern München"/"FC Bayern" = "Bayern Munich"`, `"Inter"/"Internazionale" = "Inter Milan"`, `"Paris St-Germain"/"PSG" = "Paris Saint-Germain"`, `"Bodø/Glimt" = "Bodo/Glimt"`, `"Slavia Praha" = "Slavia Prague"`, and more) so spelling differences between sources still match the same fixture.
 
 ### 2. AI consensus turns a messy web page into a settled result
 
@@ -87,9 +87,22 @@ The leader validator produces a pick + confidence + one-line reason; the other v
 
 ## Betting integrity & security
 
-Two design constraints keep the market honest, both enforced **on-chain** with no privileged key:
+Three design constraints keep the market honest, all enforced **on-chain** with no privileged key:
 
 **Fixture-specific betting deadline (irreversible close).** The constructor takes `kickoff_ts` (Unix epoch seconds, immutable). `submit_prediction()` reverts at or after it — checked against the consensus transaction time (`gl.message_raw["datetime"]`), so no stake can be placed once the match kicks off, and therefore never once the result is known.
+
+<a id="resolution-hardening"></a>
+**Resolution hardening (v0.3.2).** The LLM is treated as an untrusted *extractor*, not as the gate. It proposes a `{score, winner}`; deterministic contract code then decides whether that proposal may move payout state. Every check below runs in ordinary Python after `strict_eq`, and every one of them **fails closed** — on any failure `result`, `final_score`, `status` and the pools are left untouched and the cron simply retries:
+
+- **`resolve()` cannot run before kickoff.** It reverts with `too early: match has not kicked off`, checked against the same consensus clock as `submit_prediction()`. The gate runs *before* the attempt counter and *before* any web render, so a premature call cannot even reach the model.
+- **Settlement requires BBC *and* ESPN — both present, and in agreement.** `secondary_present` is computed from the actual render and travels through `strict_eq`, so validators cannot disagree about whether ESPN was read. A blank or failed secondary can never settle a market, no matter what the model claims. There is deliberately **no primary-only path in `resolve()`**.
+- **Winner allowlist.** Only the exact integers `-1`, `0`, `1`, `2` are accepted. `3`, `"1"`, `1.0`, `true` and `null` all revert with `invalid winner`. Booleans are rejected explicitly, since `bool` subclasses `int` and `True == 1`.
+- **The score must parse and match the winner.** `"2:1"` and `"2-1"` parse; `""`, `"-"`, `"FT"`, `"2"`, `"2:1:0"`, `"two:one"` and en-dash forms revert with `malformed score`. A score that contradicts its winner (`"2:1"` with `winner=2`) reverts with `inconsistent score and winner`. The stored `final_score` is normalised to `H:A`.
+- **No `else` fallthrough.** `winner` maps explicitly: `1 → home`, `2 → away`, `0 → draw`. Previously any value that was not negative fell through an `else` and settled as a **draw**.
+
+Covered by `tests/test_resolve_hardening.py` (29 tests): premature resolution, missing secondary, source conflict, invalid winner, malformed score, inconsistent score, plus happy-path settlement.
+
+> `mark_postponed()` keeps its narrower primary-only fallback, and that asymmetry is intentional: it can only ever open **1:1 refunds**, whereas `resolve()` pays winners. One source is enough to give everyone their own money back; it is not enough to decide who wins.
 
 **Postponements are verified, not asserted.** `mark_postponed()` is permissionless (like `resolve()`), callable only while a market is `open` and only after kickoff + a 3-hour grace window. It re-renders BBC + ESPN and classifies **each source independently** — `postponed` / `finished` / `unknown` (or `unavailable`) — under `strict_eq`, then enforces the policy on-chain:
 
@@ -175,7 +188,8 @@ One deployed instance per fixture. Immutable — team names, date and kickoff ti
 
 ```python
 submit_prediction(pick)   # payable; min 2 GEN; {home,draw,away}; one per wallet; reverts at/after kickoff
-resolve()                 # reads BBC + ESPN, reaches consensus, settles the pools
+resolve()                 # permissionless; reverts before kickoff; settles ONLY on corroborated
+                          # BBC+ESPN agreement with a validated winner and score
 claim()                   # winning predictor pulls their pari-mutuel share (last claimer sweeps the rounding dust)
 refund()                  # reclaim stake when a match goes to the refund path
 mark_postponed()          # permissionless + source-verified; opens refunds only if the sources confirm postponement

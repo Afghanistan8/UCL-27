@@ -1,4 +1,4 @@
-# v0.3.1
+# v0.3.2
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 
 from genlayer import *
@@ -56,6 +56,104 @@ def _now_epoch() -> int:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=_dt.timezone.utc)
     return int((dt - _EPOCH).total_seconds())
+
+
+# ---------------------------------------------------------------- RESOLUTION
+# VALIDATION HELPERS
+#
+# These run in ordinary (deterministic) contract code AFTER consensus, never
+# inside the LLM prompt. The model is treated as an untrusted extractor: it
+# proposes a {score, winner}, and the code below decides whether that proposal
+# is allowed to move payout state. Everything here fails CLOSED — anything
+# missing, malformed, out-of-range or self-inconsistent leaves the market OPEN
+# (or reverts) rather than settling on a guess.
+
+_DIGITS = "0123456789"
+
+
+def _coerce_winner(raw: typing.Any) -> int:
+    """
+    Allowlist the winner. Accept ONLY the exact ints -1, 0, 1, 2.
+
+    Deliberately strict about type, not just value. The previous version tested
+    `if winner < 0`, so anything not negative — 3, "1", 1.0, True — fell through
+    to an `else` branch and was silently settled as a DRAW. Booleans are
+    rejected explicitly and first: bool is a subclass of int in Python, and
+    True == 1, so a sloppier check would settle `True` as a home win.
+    """
+    if type(raw) is bool:
+        raise gl.vm.UserError("invalid winner")
+    if type(raw) is not int:
+        raise gl.vm.UserError("invalid winner")
+    if raw != -1 and raw != 0 and raw != 1 and raw != 2:
+        raise gl.vm.UserError("invalid winner")
+    return raw
+
+
+def _parse_score(raw: typing.Any) -> typing.Any:
+    """
+    Parse a full-time score into (home_goals, away_goals), or None if it is not
+    a well-formed score.
+
+    Accepts "2:1" and "2-1", with optional surrounding/inner spaces.
+    Rejects "", "-", "FT", "2", "2:1:0", "two:one", "2–1" (en dash), negatives,
+    and anything with more than one separator.
+
+    Hand-parsed rather than regex: it keeps the accepted grammar explicit and
+    auditable, and avoids depending on `re` inside the GenVM runtime.
+    """
+    if type(raw) is not str:
+        return None
+    s = raw.strip()
+    if not s or len(s) > 11:
+        return None
+
+    sep_idx = -1
+    sep_count = 0
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch == ":" or ch == "-":
+            sep_count = sep_count + 1
+            if sep_idx < 0:
+                sep_idx = i
+        i = i + 1
+
+    # Exactly one separator, and it must sit between two operands. This also
+    # rejects a leading "-" (negative goals) and "2:1:0".
+    if sep_count != 1:
+        return None
+    if sep_idx <= 0 or sep_idx >= len(s) - 1:
+        return None
+
+    left = s[:sep_idx].strip()
+    right = s[sep_idx + 1:].strip()
+    if not left or not right:
+        return None
+    if len(left) > 3 or len(right) > 3:
+        return None
+
+    # Explicit ASCII digit check — str.isdigit() also accepts unicode digits
+    # such as '٢', which must not parse as a score.
+    for ch in left:
+        if ch not in _DIGITS:
+            return None
+    for ch in right:
+        if ch not in _DIGITS:
+            return None
+
+    return (int(left), int(right))
+
+
+def _score_matches_winner(home: int, away: int, winner: int) -> bool:
+    """Is the parsed score actually consistent with the claimed winner?"""
+    if winner == 1:
+        return home > away
+    if winner == 2:
+        return away > home
+    if winner == 0:
+        return home == away
+    return False
 
 
 class PredictionMarket(gl.Contract):
@@ -195,10 +293,36 @@ class PredictionMarket(gl.Contract):
           unfinished primary returns winner = -1, leaving the match OPEN.
 
         Consensus is via gl.eq_principle.strict_eq over the normalized
-        {score, winner} — an objective fact, so strict equality is correct.
+        {score, winner, agreement, secondary_present} — an objective fact, so
+        strict equality is correct.
+
+        HARDENING (v0.3.2). Settlement now requires ALL of the following, each
+        enforced in deterministic contract code rather than trusted to the LLM:
+
+        1. POST-KICKOFF BOUNDARY — reverts if called before kickoff_ts, using
+           the same consensus clock as submit_prediction(). Checked BEFORE the
+           attempt counter and BEFORE any web render, so a premature call is
+           cheap and cannot even reach the model.
+        2. INDEPENDENT CORROBORATION — BOTH sources must have rendered AND
+           agreed. A blank/failed ESPN can never settle a market. This is
+           deliberately stricter than mark_postponed(), which may fall back to
+           an explicit primary alone: that path only opens 1:1 refunds, whereas
+           this one pays winners.
+        3. WINNER ALLOWLIST — only the exact ints -1/0/1/2 are accepted.
+        4. SCORE VALIDATION — the score must parse as home:away non-negative
+           integers AND agree with the claimed winner.
+
+        Any failure leaves result / final_score / status / pools untouched so
+        the cron can simply retry later.
         """
         if self.status != STATUS_OPEN:
             raise gl.vm.UserError("match is not open for resolution")
+
+        # ---- (1) POST-KICKOFF BOUNDARY -------------------------------------
+        # Before the counter and before any nondet work: a pre-kickoff call is
+        # rejected without spending a web render or an LLM call.
+        if _now_epoch() < int(self.kickoff_ts):
+            raise gl.vm.UserError("too early: match has not kicked off")
 
         self.resolve_attempts = self.resolve_attempts + u256(1)
 
@@ -210,12 +334,15 @@ class PredictionMarket(gl.Contract):
 
         def get_match_result() -> typing.Any:
             primary = gl.nondet.web.render(resolution_url, mode="text")
-            # Secondary is best-effort: if it fails to render we fall back to
-            # the primary alone (logged as agreement="primary-only").
+            # A failed or blank secondary is NOT a fallback to primary-only —
+            # it makes the read uncorroborated, and the on-chain gate below
+            # refuses to settle. secondary_present travels through strict_eq so
+            # validators cannot disagree about whether ESPN was actually read.
             try:
                 secondary = gl.nondet.web.render(resolution_url_2, mode="text")
             except Exception:
                 secondary = ""
+            secondary_present = bool(secondary.strip())
 
             task = f"""
 You are settling a UEFA Champions League match. Find the FULL-TIME score
@@ -250,44 +377,111 @@ SECONDARY source (ESPN), cross-check only (may be empty):
 {secondary}
 End of SECONDARY.
 
-Rules:
-- Base the result on the PRIMARY source.
-- If the PRIMARY shows the match has not finished (e.g. shows a kick-off time,
-  is live, HT, or the score is absent), return winner = -1.
-- If BOTH sources clearly show a FINISHED result but they DISAGREE on the
-  winner, return winner = -1 (do not guess — safer to retry later).
-- If the SECONDARY is empty/unavailable, use the PRIMARY alone.
+Rules — classify EACH source INDEPENDENTLY first, then compare:
+- If the SECONDARY is empty, missing, or failed to render:
+    winner = -1, score = "-", agreement = "missing-secondary"
+- If the PRIMARY has not finished (kick-off time shown, live, HT, or the score
+  is absent): winner = -1, score = "-", agreement = "unresolved"
+- If BOTH sources show a finished result but DISAGREE on the winner or score:
+    winner = -1, score = "-", agreement = "conflict"
+- If BOTH sources show the SAME finished full-time result:
+    score = "H:A" (e.g. "2:1"), winner = 1/0/2, agreement = "agree"
+- NEVER settle from one source. NEVER guess. NEVER use extra time or penalties
+  — this is a 90-minutes-plus-stoppage league-phase market.
 - Do not use pre-match odds, predicted scores, or another match on the page.
 
 Respond ONLY with this JSON, nothing else:
 {{
     "score": str,           // full-time score as home:away, e.g. "2:1", or "-" if unresolved
     "winner": int,          // 1 = {team1} won, 2 = {team2} won, 0 = draw, -1 = not resolved
-    "agreement": str        // "agree" | "primary-only" | "conflict"
+    "agreement": str        // "agree" | "conflict" | "unresolved" | "missing-secondary"
 }}
 Your response must be parseable JSON with no prefix or suffix.
 """
             result = (
                 gl.nondet.exec_prompt(task).replace("```json", "").replace("```", "")
             )
-            return json.loads(result)
+            parsed = json.loads(result)
+
+            # Normalise into a fixed, comparable shape for strict_eq. `winner`
+            # is passed through UNCOERCED so a bad type reaches the allowlist
+            # below and is rejected there rather than being silently cast.
+            return {
+                "score": parsed.get("score", "-"),
+                "winner": parsed.get("winner", -1),
+                "agreement": str(parsed.get("agreement", "")),
+                "secondary_present": secondary_present,
+            }
 
         result_json = gl.eq_principle.strict_eq(get_match_result)
 
-        winner = result_json["winner"]
-        if winner < 0:
-            # Match not yet finished — leave status as OPEN, can retry later
-            return result_json
+        # ---- DETERMINISTIC SETTLEMENT GATE ---------------------------------
+        # Everything below runs on the agreed consensus payload, in ordinary
+        # contract code. The LLM is never the only gate.
 
-        # Map winner number to pick string
+        agreement = str(result_json.get("agreement", "")).strip().lower()
+        secondary_present = bool(result_json.get("secondary_present", False))
+
+        # (2) INDEPENDENT CORROBORATION.
+        # A missing secondary is forced uncorroborated even if the model claimed
+        # "agree" — the render either happened or it did not.
+        if not secondary_present:
+            return {
+                "score": result_json.get("score", "-"),
+                "winner": result_json.get("winner", -1),
+                "agreement": agreement,
+                "secondary_present": False,
+                "settled": False,
+                "reason": "missing_secondary",
+            }
+
+        if agreement != "agree":
+            return {
+                "score": result_json.get("score", "-"),
+                "winner": result_json.get("winner", -1),
+                "agreement": agreement,
+                "secondary_present": True,
+                "settled": False,
+                "reason": "source_conflict_or_uncorroborated",
+            }
+
+        # (3) WINNER ALLOWLIST — reverts on 3, "1", 1.0, True, None, …
+        winner = _coerce_winner(result_json.get("winner"))
+
+        if winner == -1:
+            return {
+                "score": result_json.get("score", "-"),
+                "winner": -1,
+                "agreement": agreement,
+                "secondary_present": True,
+                "settled": False,
+                "reason": "unresolved",
+            }
+
+        # (4) SCORE VALIDATION + CONSISTENCY WITH THE WINNER.
+        parsed_score = _parse_score(result_json.get("score"))
+        if parsed_score is None:
+            raise gl.vm.UserError("malformed score")
+
+        home_goals = parsed_score[0]
+        away_goals = parsed_score[1]
+        if not _score_matches_winner(home_goals, away_goals, winner):
+            raise gl.vm.UserError("inconsistent score and winner")
+
+        # ---- ONLY NOW may payout state change ------------------------------
+        # Explicit mapping only: no `else` fallthrough that could turn an
+        # unexpected value into a draw.
         if winner == 1:
             self.result = PICK_HOME
         elif winner == 2:
             self.result = PICK_AWAY
-        else:
+        elif winner == 0:
             self.result = PICK_DRAW
+        else:
+            raise gl.vm.UserError("invalid winner")
 
-        self.final_score = result_json["score"]
+        # Store the NORMALISED score, so "2-1" is persisted as "2:1".
+        self.final_score = str(home_goals) + ":" + str(away_goals)
 
         # ---- Determine winning pool ----
         if self.result == PICK_HOME:
@@ -307,7 +501,14 @@ Your response must be parseable JSON with no prefix or suffix.
         else:
             self.status = STATUS_RESOLVED
 
-        return result_json
+        return {
+            "score": self.final_score,
+            "winner": winner,
+            "agreement": agreement,
+            "secondary_present": True,
+            "settled": True,
+            "reason": "settled",
+        }
 
     # ------------------------------------------------------------ CLAIM
 
