@@ -33,3 +33,6 @@ Thumbs.db
 deploy.log
 deploy_retry.log
 *.log
+
+# local record of the pre-v0.3.2 market addresses (superseded)
+deploy_checkpoint.v*.json

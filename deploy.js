@@ -82,6 +82,47 @@ function extractContractAddress(receipt) {
   );
 }
 
+// Bradbury throttles bursts of deploys with
+//   "transaction gas rate limit exceeded: node is at capacity, retry in ~699ms"
+// and occasionally drops a connection mid-flight. Both are transient and the
+// deploy has NOT landed, so retrying is safe (no risk of a duplicate contract).
+// Anything else — a revert, bad constructor args — is a real failure and is
+// rethrown immediately rather than retried.
+function isRetryableRpcError(err) {
+  const msg = `${err?.message || err || ''} ${err?.details || ''}`.toLowerCase();
+  return (
+    msg.includes('rate limit') ||
+    msg.includes('at capacity') ||
+    msg.includes('exceeds defined limit') ||
+    msg.includes('intrinsic gas too low') ||   // seen transiently under load
+    msg.includes('econnreset') ||
+    msg.includes('socket hang up') ||
+    msg.includes('fetch failed') ||
+    msg.includes('timeout') ||
+    msg.includes('503') ||
+    msg.includes('502')
+  );
+}
+
+// Exponential backoff with jitter. The node tells us roughly how long to wait
+// (~699ms); we start above that and grow, so a busy node is given real room.
+async function withRetry(label, fn, maxAttempts = 6) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableRpcError(err) || attempt === maxAttempts) throw err;
+      const backoff = Math.round(1000 * Math.pow(2, attempt - 1) + Math.random() * 500);
+      console.log(`  … ${label}: ${(err.message || '').split('\n')[0].slice(0, 70)}`);
+      console.log(`     retry ${attempt}/${maxAttempts - 1} in ${backoff}ms`);
+      await sleep(backoff);
+    }
+  }
+  throw lastErr;
+}
+
 // ----------------------------------------------------- main loop
 let okCount = 0;
 let skipCount = 0;
@@ -150,19 +191,23 @@ for (let i = 0; i < fixtures.length; i++) {
     // Deploy the contract. Constructor: (team1, team2, game_date, kickoff_ts).
     // kickoff_ts (Unix epoch seconds) is the on-chain betting deadline:
     // submit_prediction() reverts at/after it, so no stake lands post-kickoff.
-    const txHash = await client.deployContract({
-      code: contractCode,
-      args: [f.home, f.away, game_date, f.kickoff_ts],
-      leaderOnly: false,
-    });
+    const txHash = await withRetry('submit', () =>
+      client.deployContract({
+        code: contractCode,
+        args: [f.home, f.away, game_date, f.kickoff_ts],
+        leaderOnly: false,
+      })
+    );
     console.log(`  tx: ${txHash}`);
 
-    const receipt = await client.waitForTransactionReceipt({
-      hash: txHash,
-      status: TransactionStatus.ACCEPTED,
-      retries: 60,    // up to ~5 min
-      interval: 5000,
-    });
+    const receipt = await withRetry('receipt', () =>
+      client.waitForTransactionReceipt({
+        hash: txHash,
+        status: TransactionStatus.ACCEPTED,
+        retries: 60,    // up to ~5 min
+        interval: 5000,
+      })
+    );
 
     const contractAddress = extractContractAddress(receipt);
     if (!contractAddress) {
@@ -180,8 +225,10 @@ for (let i = 0; i < fixtures.length; i++) {
     const ok = await mirrorToSupabase(f, contractAddress);
     if (!ok) console.error(`  ! deployed OK but Supabase mirror failed (will retry on re-run)`);
 
-    // Small pause between deploys (be gentle to the network)
-    await sleep(2000);
+    // Pause between deploys. Bradbury rate-limits bursts, so this is the main
+    // thing keeping us under the node's gas-rate cap; withRetry() above handles
+    // the cases where we still hit it.
+    await sleep(4000);
   } catch (err) {
     console.error(`  x FAILED: ${err.message}`);
     failures.push({ match_id: f.match_id, error: err.message });
